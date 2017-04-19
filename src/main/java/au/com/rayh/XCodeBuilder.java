@@ -524,6 +524,19 @@ public class XCodeBuilder extends Builder {
         XCodeBuildOutputParser reportGenerator = new JenkinsXCodeBuildOutputParser(projectRoot, listener);
         List<String> commandLine = Lists.newArrayList(getGlobalConfiguration().getXcodebuildPath());
 
+        // Prioritizing workspace over project setting
+        if (!StringUtils.isEmpty(xcodeWorkspaceFile)) {
+            commandLine.add("-workspace");
+            commandLine.add(xcodeWorkspaceFile + ".xcworkspace");
+            xcodeReport.append(", workspace: ").append(xcodeWorkspaceFile);
+        } else if (!StringUtils.isEmpty(xcodeProjectFile)) {
+            commandLine.add("-project");
+            commandLine.add(xcodeProjectFile);
+            xcodeReport.append(", project: ").append(xcodeProjectFile);
+        } else {
+            xcodeReport.append(", project: DEFAULT");
+        }
+
         // Prioritizing schema over target setting
         if (!StringUtils.isEmpty(xcodeSchema)) {
             commandLine.add("-scheme");
@@ -556,6 +569,12 @@ public class XCodeBuilder extends Builder {
             xcodeReport.append("target: ").append(target);
         }
 
+        if (!StringUtils.isEmpty(configuration)) {
+            commandLine.add("-configuration");
+            commandLine.add(configuration);
+            xcodeReport.append(", configuration: ").append(configuration);
+        }
+
         if (!StringUtils.isEmpty(sdk)) {
             commandLine.add("-sdk");
             commandLine.add(sdk);
@@ -564,24 +583,6 @@ public class XCodeBuilder extends Builder {
             xcodeReport.append(", sdk: DEFAULT");
         }
 
-        // Prioritizing workspace over project setting
-        if (!StringUtils.isEmpty(xcodeWorkspaceFile)) {
-            commandLine.add("-workspace");
-            commandLine.add(xcodeWorkspaceFile + ".xcworkspace");
-            xcodeReport.append(", workspace: ").append(xcodeWorkspaceFile);
-        } else if (!StringUtils.isEmpty(xcodeProjectFile)) {
-            commandLine.add("-project");
-            commandLine.add(xcodeProjectFile);
-            xcodeReport.append(", project: ").append(xcodeProjectFile);
-        } else {
-            xcodeReport.append(", project: DEFAULT");
-        }
-
-		if (!StringUtils.isEmpty(configuration)) {
-			commandLine.add("-configuration");
-			commandLine.add(configuration);
-			xcodeReport.append(", configuration: ").append(configuration);
-		}
 
         if (cleanBeforeBuild) {
             commandLine.add("clean");
@@ -595,9 +596,9 @@ public class XCodeBuilder extends Builder {
         //commandLine.add("build");
         FilePath archiveLocation = buildDirectory.absolutize().child(xcodeSchema + ".xcarchive");
         if(buildIpa || generateArchive){
-            commandLine.add("archive");
             commandLine.add("-archivePath");
             commandLine.add(archiveLocation.getRemote());
+            commandLine.add("archive");
             xcodeReport.append(", archive:YES");
         }else{
             xcodeReport.append(", archive:NO");
@@ -613,6 +614,7 @@ public class XCodeBuilder extends Builder {
         }
 
         // BUILD_DIR
+        /* xcodebuild cann't follow BUILD_DIR and DEVELOPMENT_TEAM arguments
         if (!StringUtils.isEmpty(buildDirValue)) {
             commandLine.add("BUILD_DIR=" + buildDirValue);
             xcodeReport.append(", buildDir: ").append(buildDirValue);
@@ -627,6 +629,7 @@ public class XCodeBuilder extends Builder {
         } else {
             xcodeReport.append(", developmentTeamID: DEFAULT");
         }
+        */
 
         // Additional (custom) xcodebuild arguments
         if (!StringUtils.isEmpty(xcodebuildArguments)) {
@@ -760,31 +763,33 @@ public class XCodeBuilder extends Builder {
 
                 // also zip up the symbols, if present
                 listener.getLogger().println("Archiving dSYM");
-                List<FilePath> dSYMs = buildDirectory.absolutize().child(configuration + "-" + buildPlatform).list(new DSymFileFilter());
+                // find dSMY file in the .xcarchive dir
+                List<FilePath> dSYMs = archive.absolutize().child("dSYMs").list(new DSymFileFilter());
 
-                if (dSYMs.isEmpty()) {
+                // NullPointerException check
+                if (dSYMs == null || dSYMs.isEmpty()) {
                     listener.getLogger().println("No dSYM file found in " + buildDirectory.absolutize().child(configuration + "-" + buildPlatform) + "!");
-                }
+                } else {
+                    for(FilePath dSYM : dSYMs) {
+                        returnCode = launcher.launch()
+                                .envs(envs)
+                                .stdout(listener)
+                                .pwd(buildDirectory)
+                                .cmds("ditto",
+                                        "-c",
+                                        "-k",
+                                        "--keepParent",
+                                        "-rsrc",
+                                        dSYM.absolutize().getRemote(),
+                                        ipaOutputPath.child(baseName + "-dSYM.zip")
+                                                .absolutize()
+                                                .getRemote())
+                                .join();
 
-                for(FilePath dSYM : dSYMs) {
-                    returnCode = launcher.launch()
-                            .envs(envs)
-                            .stdout(listener)
-                            .pwd(buildDirectory)
-                            .cmds("ditto",
-                                    "-c",
-                                    "-k",
-                                    "--keepParent",
-                                    "-rsrc",
-                                    dSYM.absolutize().getRemote(),
-                                    ipaOutputPath.child(baseName + "-dSYM.zip")
-                                            .absolutize()
-                                            .getRemote())
-                            .join();
-
-                    if (returnCode > 0) {
-                        listener.getLogger().println(Messages.XCodeBuilder_zipFailed(baseName));
-                        return false;
+                        if (returnCode > 0) {
+                            listener.getLogger().println(Messages.XCodeBuilder_zipFailed(baseName));
+                            return false;
+                        }
                     }
                 }
 
